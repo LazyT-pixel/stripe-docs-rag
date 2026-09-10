@@ -1,0 +1,24 @@
+# Ingestion
+requests
+beautifulsoup4
+lxml
+
+# Chunking / RAG orchestration
+langchain
+langchain-text-splitters
+
+# Embeddings + vector store
+chromadb
+sentence-transformers   # swap for openai/voyage client if you go that route
+
+# LLM — pick a provider via LLM_PROVIDER in .env (default: mistral)
+mistralai      # free rate-limited "Experiment" tier on La Plateforme
+anthropic      # pay-as-you-go; keep installed in case you switch back
+
+# CLI / utils
+python-dotenv
+tqdm
+rich
+
+# Eval
+pandas
