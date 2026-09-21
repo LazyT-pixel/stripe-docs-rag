@@ -3,10 +3,9 @@ Query pipeline: given a natural-language question, retrieve the most
 relevant chunks from the vector store and generate a grounded answer
 with citations.
 
-Supports two LLM providers for generation — Claude (pay-as-you-go from
-account creation) or Mistral (has a rate-limited free "Experiment" tier
-on La Plateforme, good enough for a portfolio project's usage volume).
-Set LLM_PROVIDER in .env to "anthropic" or "mistral".
+Supports three LLM providers for generation, chosen via LLM_PROVIDER in
+.env: "mistral" (default, free rate-limited tier), "groq" (free tier), or
+"anthropic" (pay-as-you-go).
 
 Usage:
     python src/query.py "How do I handle a failed webhook retry?"
@@ -14,6 +13,7 @@ Usage:
 
 import os
 import sys
+import time
 
 import chromadb
 from dotenv import load_dotenv
@@ -25,11 +25,14 @@ CHROMA_DIR = "./chroma_db"
 COLLECTION_NAME = "stripe_docs"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # must match the model used in ingest.py
 
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "mistral").lower()  # "anthropic" or "mistral"
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "mistral").lower()  # "anthropic", "mistral", or "groq"
 CLAUDE_MODEL = "claude-sonnet-4-6"
-MISTRAL_MODEL = "mistral-large-latest"
+MISTRAL_MODEL = "mistral-small-2603"
+GROQ_MODEL = "openai/gpt-oss-120b"  # model availability is per Groq account; check Groq().models.list()
 
-# Chroma returns cosine *distance* (lower = more similar) by default.
+# Chroma's default distance is squared L2 (lower = more similar). With
+# all-MiniLM-L6-v2's normalized embeddings that is 2 * (1 - cosine
+# similarity), so it ranges from 0 to 4 and 1.2 is roughly cosine 0.4.
 # This is a placeholder — after running a few real queries, look at the
 # distances that come back for good vs. bad matches and set this based
 # on real numbers, then note the chosen value + reasoning in the README.
@@ -87,9 +90,18 @@ def _get_llm_client():
             )
         _llm_client = Mistral(api_key=api_key)
 
-    else:
-        raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r} (expected 'anthropic' or 'mistral')")
+    elif LLM_PROVIDER == "groq":
+        from groq import Groq
 
+        api_key = os.environ.get("GROQ_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "GROQ_API_KEY not set. Copy .env.example to .env and add your key."
+            )
+        _llm_client = Groq(api_key=api_key)
+
+    else:
+        raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r} (expected 'anthropic', 'mistral', or 'groq')")
     return _llm_client
 
 
@@ -127,7 +139,10 @@ documentation excerpts provided below. Follow these rules strictly:
    knowledge about Stripe or make assumptions.
 2. Cite the excerpt number(s) you used, like [1] or [1][3], after each
    claim.
-3. If the excerpts don't contain enough information to answer the
+3. Keep the conditions and scope the excerpts attach to a statement
+   (for example, which event type, product, or mode a behavior applies
+   to). Do not generalize a narrow statement into a general rule.
+4. If the excerpts don't contain enough information to answer the
    question, say so explicitly instead of guessing.
 
 Documentation excerpts:
@@ -138,35 +153,62 @@ Question: {question}
 Answer:"""
 
 
-def generate_answer(prompt: str) -> str:
-    """Call the configured LLM provider with the assembled prompt."""
+def generate_answer(prompt: str, max_retries: int = 3) -> str:
+    """Call the configured LLM provider with the assembled prompt.
+
+    Retries with exponential backoff on rate-limit (429) errors — the
+    free tier's 1 request/second cap means a burst of test queries can
+    trip this even when spaced a couple seconds apart.
+    """
     client = _get_llm_client()
 
-    if LLM_PROVIDER == "anthropic":
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return "".join(block.text for block in response.content if block.type == "text")
+    for attempt in range(max_retries):
+        try:
+            if LLM_PROVIDER == "anthropic":
+                response = client.messages.create(
+                    model=CLAUDE_MODEL,
+                    max_tokens=1000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return "".join(block.text for block in response.content if block.type == "text")
 
-    elif LLM_PROVIDER == "mistral":
-        response = client.chat.complete(
-            model=MISTRAL_MODEL,
-            max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.choices[0].message.content
+            elif LLM_PROVIDER == "mistral":
+                response = client.chat.complete(
+                    model=MISTRAL_MODEL,
+                    max_tokens=1000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return response.choices[0].message.content
 
-    raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r}")
+            elif LLM_PROVIDER == "groq":
+                response = client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    max_tokens=1000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return response.choices[0].message.content
+
+            else:
+                raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r}")
+
+        except Exception as e:
+            is_rate_limit = "429" in str(e) or "rate_limited" in str(e).lower()
+            if is_rate_limit and attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                print(f"  Rate limited, retrying in {wait}s... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            raise
 
 
-def answer(question: str) -> str:
+def answer(question: str) -> tuple[str, list[dict]]:
+    """Return (answer text, retrieved chunks). Chunks are returned even when
+    we decline to answer, so callers can inspect what retrieval found."""
     chunks = retrieve(question)
     if not chunks or chunks[0]["distance"] > MAX_DISTANCE_THRESHOLD:
-        return "I don't have enough information in the docs to answer that confidently."
+        return "I don't have enough information in the docs to answer that confidently.", chunks
     prompt = build_prompt(question, chunks)
-    return generate_answer(prompt)
+    return generate_answer(prompt), chunks
 
 
 if __name__ == "__main__":
@@ -174,4 +216,9 @@ if __name__ == "__main__":
         print('Usage: python src/query.py "<question>"')
         sys.exit(1)
     question = " ".join(sys.argv[1:])
-    print(answer(question))
+    text, chunks = answer(question)
+    print(text)
+    if chunks:
+        print("\nRetrieved excerpts:")
+        for i, c in enumerate(chunks, start=1):
+            print(f"  [{i}] {c['source']}  (distance {c['distance']:.3f})")

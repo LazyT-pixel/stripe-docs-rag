@@ -3,17 +3,14 @@ requests
 beautifulsoup4
 lxml
 
-# Chunking / RAG orchestration
-langchain
-langchain-text-splitters
-
 # Embeddings + vector store
 chromadb
 sentence-transformers   # swap for openai/voyage client if you go that route
 
-# LLM — pick a provider via LLM_PROVIDER in .env (default: mistral)
+# LLM - pick a provider via LLM_PROVIDER in .env (default: mistral)
 mistralai      # free rate-limited "Experiment" tier on La Plateforme
 anthropic      # pay-as-you-go; keep installed in case you switch back
+groq           # free tier at console.groq.com
 
 # CLI / utils
 python-dotenv
