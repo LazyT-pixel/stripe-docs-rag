@@ -39,9 +39,9 @@ relevant documentation chunks and generate an answer that:
 - [x] Chunking pipeline (800 chars, 100 overlap)
 - [x] Embedding + vector store indexing
 - [x] Retrieval + generation pipeline with citations
-- [ ] "I don't know" handling for low-confidence retrieval (a distance threshold exists but is an untuned placeholder)
-- [ ] 15-question eval set + scoring script (`eval/questions.md` is a blank template; no scoring script yet)
-- [ ] README write-up with results, failure modes, what I'd do next
+- [x] "I don't know" handling for low-confidence retrieval (threshold set from real eval distances, see Evaluation)
+- [x] 15-question eval set + scoring script (`eval/questions.md` + `eval/run_eval.py`)
+- [x] README write-up with results, failure modes, what I'd do next
 - [ ] (Stretch) Chunking strategy comparison
 - [ ] (Stretch) Re-ranking step
 - [ ] (Stretch) Streaming responses
@@ -71,8 +71,48 @@ can check that each claim is actually supported by what retrieval returned.
 
 ## Evaluation
 
-`eval/questions.md` holds the (not yet filled in) test set. A scoring script
-is planned; results and analysis will be written up here once complete.
+`eval/questions.md` holds 15 questions: 8 factual, 4 requiring synthesis
+across 2+ chunks, and 3 "trap" questions outside the scope of the 5 indexed
+pages (refunds, Connect payouts, Stripe Tax rates), which should be declined
+rather than answered.
+
+```bash
+python eval/run_eval.py --out eval/results.md
+```
+
+The script auto-grades only the trap questions, by checking whether the
+answer matches the pipeline's fixed decline string OR uses decline-like
+phrasing (`looks_like_decline()` in `eval/run_eval.py`) — the model can
+legitimately decline either via the distance-threshold shortcut or on its
+own judgment per the prompt's "say so explicitly" rule, and both count.
+Factual and synthesis questions are not auto-graded; free-text answers were
+read and judged by hand, because a string/keyword check produces both false
+passes and false fails on short excerpts, which would hide the exact kind
+of error this project cares about catching.
+
+**Result: 14/15.** All 8 factual and all 4 synthesis questions passed
+manual review. 2/3 trap questions correctly declined (Connect payouts, Stripe
+Tax rates); the third (refund processing) failed — the model didn't invent a
+refund procedure, but it also didn't cleanly decline. It volunteered that the
+docs mention a `charge.refunded` webhook event (true, and retrieved) while
+explaining it couldn't describe the refund steps themselves (also true). That
+sits in between "hallucinated" and "declined", and I'm counting it as a fail
+since the question asked for a procedure and the honest answer is "I don't
+know", not a tour of a tangentially related webhook event.
+
+Two parameters were changed based on this run's actual numbers, not guesses:
+- `MAX_DISTANCE_THRESHOLD` (1.2 → 1.35): the legitimate questions' top
+  retrieved distance ranged 0.389–1.278, and the trap questions' ranged
+  0.674–1.396. Those ranges overlap — a trap question can score a lower
+  (more "confident") distance than a real one — so no single threshold can
+  cleanly separate them. 1.2 was below a real question's distance (Q12,
+  1.278), causing it to be auto-declined before the model ever saw it.
+  1.35 clears that case while still catching catastrophic retrieval misses.
+  The actual filtering of out-of-scope questions is mostly done by the
+  prompt's own "say so if the excerpts don't cover it" rule, not this
+  threshold — the threshold is a backstop, not the real mechanism.
+- `max_tokens` (1000 → 1800, all three providers): a synthesis answer
+  that built a markdown table ran out of budget and was cut off mid-word.
 
 ## What I learned / what broke
 
@@ -100,3 +140,14 @@ is planned; results and analysis will be written up here once complete.
 - **Tag-per-line text extraction hurt chunk quality.** Inline code like
   `invoice.payment_failed` was being split across five lines. The cleaner now
   unwraps inline tags before extracting text.
+- **A distance threshold alone can't separate in-scope from out-of-scope
+  questions.** See Evaluation — trap and legitimate questions' distances
+  overlap in this corpus. The prompt-level "decline if the excerpts don't
+  cover it" instruction is doing the real work; the distance threshold only
+  catches the worst retrieval misses.
+- **My own eval script's grading was wrong, not just the pipeline.** The
+  first run reported 0/3 trap questions passing. All three had actually
+  declined correctly — just with different wording than the one fixed
+  string I was checking for. Worth remembering when a "0% pass rate"
+  shows up: check the grader before concluding the thing you're testing
+  is broken.

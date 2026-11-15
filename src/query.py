@@ -36,7 +36,16 @@ GROQ_MODEL = "openai/gpt-oss-120b"  # model availability is per Groq account; ch
 # This is a placeholder — after running a few real queries, look at the
 # distances that come back for good vs. bad matches and set this based
 # on real numbers, then note the chosen value + reasoning in the README.
-MAX_DISTANCE_THRESHOLD = 1.2
+#
+# Eval run (2026-11-15): legitimate questions scored 0.389-1.278; trap
+# (out-of-scope) questions scored 0.674-1.396. The two ranges overlap, so
+# no single threshold cleanly separates them -- a trap question can look
+# "closer" than a real one. Raised from 1.2 to 1.35 so this floor only
+# catches catastrophic retrieval misses; the prompt's own "say so if the
+# excerpts don't cover it" rule is what actually filters out-of-scope
+# questions that still get past this floor (see eval/results.md Q13-15,
+# which declined correctly even though none tripped the old threshold).
+MAX_DISTANCE_THRESHOLD = 1.35
 
 _embedder = None
 _collection = None
@@ -167,7 +176,7 @@ def generate_answer(prompt: str, max_retries: int = 3) -> str:
             if LLM_PROVIDER == "anthropic":
                 response = client.messages.create(
                     model=CLAUDE_MODEL,
-                    max_tokens=1000,
+                    max_tokens=1800,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 return "".join(block.text for block in response.content if block.type == "text")
@@ -175,7 +184,7 @@ def generate_answer(prompt: str, max_retries: int = 3) -> str:
             elif LLM_PROVIDER == "mistral":
                 response = client.chat.complete(
                     model=MISTRAL_MODEL,
-                    max_tokens=1000,
+                    max_tokens=1800,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 return response.choices[0].message.content
@@ -183,7 +192,7 @@ def generate_answer(prompt: str, max_retries: int = 3) -> str:
             elif LLM_PROVIDER == "groq":
                 response = client.chat.completions.create(
                     model=GROQ_MODEL,
-                    max_tokens=1000,
+                    max_tokens=1800,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 return response.choices[0].message.content
