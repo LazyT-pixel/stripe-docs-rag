@@ -90,15 +90,40 @@ read and judged by hand, because a string/keyword check produces both false
 passes and false fails on short excerpts, which would hide the exact kind
 of error this project cares about catching.
 
-**Result: 14/15.** All 8 factual and all 4 synthesis questions passed
-manual review. 2/3 trap questions correctly declined (Connect payouts, Stripe
-Tax rates); the third (refund processing) failed — the model didn't invent a
-refund procedure, but it also didn't cleanly decline. It volunteered that the
-docs mention a `charge.refunded` webhook event (true, and retrieved) while
-explaining it couldn't describe the refund steps themselves (also true). That
-sits in between "hallucinated" and "declined", and I'm counting it as a fail
-since the question asked for a procedure and the honest answer is "I don't
-know", not a tour of a tangentially related webhook event.
+**Result: 14/15, but which question fails has moved and that move is the
+real finding here.**
+
+First pass: 2/3 trap questions correctly declined; the third (refund
+processing, Q13) didn't invent a procedure but volunteered an unrelated fact
+(that a `charge.refunded` webhook event exists) instead of cleanly declining.
+I tightened the prompt's decline rule to stop that — told it a passing
+mention of a related term isn't the same as having an answer.
+
+That fixed Q13 (it now gives a single clean "the excerpts don't contain
+this" sentence, no tangent) but broke Q2, which had previously answered
+correctly. Q2's question is what to do when a PaymentIntent is `processing`,
+and the docs state the answer plainly in one line: "Wait for the initiated
+payment to succeed or fail." After the stricter rule, the model started
+declining this too — same retrieved chunks, same distances, different
+(wrong) output. The rule meant to stop the model from padding a decline with
+irrelevant tangents had made it generally more trigger-happy to decline.
+
+I then split the rule in two: one half says a short, caveated excerpt that
+*directly names* the status/event in the question counts as enough to
+answer (fixing Q2 without reopening Q13), the other half keeps the narrower
+"a different, unrelated mention doesn't count as an answer" instruction
+(keeping Q13 fixed). Re-running: Q13 stayed clean, but **Q2 regressed
+again** — same wrong decline, same wording almost verbatim. Net result:
+14/15, with Q2 now the failure instead of Q13.
+
+This is unresolved as of now. I haven't confirmed whether the actual
+retrieved chunks for Q2 include the sentence that answers it — the eval
+report only shows source filenames and distances, not chunk text, so I
+can't yet tell whether this is a prompt problem (the answer is right there
+and the model still won't use it) or a retrieval problem (the answer never
+makes the top-5 chunks, and the model is correctly saying it doesn't have
+it). Next step is adding that visibility before touching the prompt again,
+rather than continuing to guess at wording.
 
 Two parameters were changed based on this run's actual numbers, not guesses:
 - `MAX_DISTANCE_THRESHOLD` (1.2 → 1.35): the legitimate questions' top
@@ -113,6 +138,10 @@ Two parameters were changed based on this run's actual numbers, not guesses:
   threshold — the threshold is a backstop, not the real mechanism.
 - `max_tokens` (1000 → 1800, all three providers): a synthesis answer
   that built a markdown table ran out of budget and was cut off mid-word.
+
+The decline-rule back-and-forth above (Q13 vs. Q2) was not a parameter
+change — it's `build_prompt`'s rules 4-5 in `src/query.py`, if picking this
+back up.
 
 ## What I learned / what broke
 
@@ -151,3 +180,11 @@ Two parameters were changed based on this run's actual numbers, not guesses:
   string I was checking for. Worth remembering when a "0% pass rate"
   shows up: check the grader before concluding the thing you're testing
   is broken.
+- **Tightening a decline rule to fix one question's over-sharing made a
+  different question under-answer.** See Evaluation's Q13/Q2 writeup. Same
+  retrieved chunks, same distances, different prompt wording, different
+  (and in Q2's case, wrong) output. Prompt rules aren't independent knobs —
+  a change aimed at one failure mode can shift the model's behavior on
+  questions it previously got right. Still unresolved; next step is seeing
+  the actual retrieved chunk text for Q2, not just source names and
+  distances, before changing the wording again.

@@ -151,8 +151,17 @@ documentation excerpts provided below. Follow these rules strictly:
 3. Keep the conditions and scope the excerpts attach to a statement
    (for example, which event type, product, or mode a behavior applies
    to). Do not generalize a narrow statement into a general rule.
-4. If the excerpts don't contain enough information to answer the
-   question, say so explicitly instead of guessing.
+4. If an excerpt directly names the specific status, event type, or
+   error named in the question and states what happens or what to do
+   about it, that counts as enough information to answer -- answer from
+   it, including any caveat or condition it attaches (apply rule 3 to
+   scope the claim correctly), even if the excerpt is short or only one
+   sentence. A caveat is not a reason to withhold the answer.
+5. Only say the excerpts don't contain enough information when no
+   excerpt actually states anything about the specific status, event,
+   or error named in the question. A different, related term or event
+   mentioned elsewhere in the excerpts does not count as an answer --
+   decline in that case rather than describing the unrelated mention.
 
 Documentation excerpts:
 {context}
